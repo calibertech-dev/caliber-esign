@@ -1,22 +1,23 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
-    <fullName>Signing_Mode__c</fullName>
-    <label>Signing Mode</label>
+    <fullName>Routing_Mode__c</fullName>
+    <label>Routing Mode</label>
     <type>Picklist</type>
     <valueSet>
         <restricted>true</restricted>
         <valueSetDefinition>
             <sorted>false</sorted>
             <value>
-                <fullName>Sequential</fullName>
+                <fullName>sequential</fullName>
                 <default>true</default>
                 <label>Sequential</label>
             </value>
             <value>
-                <fullName>Parallel</fullName>
+                <fullName>parallel</fullName>
                 <default>false</default>
                 <label>Parallel</label>
             </value>
         </valueSetDefinition>
     </valueSet>
+    <inlineHelpText>Sequential = Signers sign one after another.  Parallel = Signers sign in any order.</inlineHelpText>
 </CustomField>
