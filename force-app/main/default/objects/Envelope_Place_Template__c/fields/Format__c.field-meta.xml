@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+    <fullName>Format__c</fullName>
+    <label>Format</label>
+    <length>80</length>
+    <type>Text</type>
+    <inlineHelpText>Format of the input field. e.g. email, zipcode-us, /^[a-z0-9]{1,10}$/</inlineHelpText>
+</CustomField>

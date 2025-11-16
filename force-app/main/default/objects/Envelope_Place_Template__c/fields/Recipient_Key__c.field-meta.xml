@@ -4,4 +4,5 @@
     <label>Recipient Key</label>
     <length>80</length>
     <type>Text</type>
+    <inlineHelpText>Unique key to identify the recipient this place is assigned to.</inlineHelpText>
 </CustomField>

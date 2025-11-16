@@ -18,7 +18,7 @@
                 <label>Initials</label>
             </value>
             <value>
-                <fullName>text</fullName>
+                <fullName>text_input</fullName>
                 <default>false</default>
                 <label>Text</label>
             </value>
