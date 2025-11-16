@@ -5,15 +5,15 @@
       "versionNumber": "0.1.0.NEXT",
       "path": "force-app",
       "default": true,
-      "package": "caliber-signature-api",
-      "versionDescription": "caliber-signature-api package"
+      "package": "caliber-esign",
+      "versionDescription": "caliber-esign package"
     }
   ],
-  "name": "caliber-signature-api",
+  "name": "caliber-esign",
   "namespace": "",
   "sfdcLoginUrl": "https://login.salesforce.com",
   "sourceApiVersion": "64.0",
   "packageAliases": {
-    "caliber-signature-api": "0Hoaj0000000s5FCAQ"
+    "caliber-esign": "0Hoaj0000000s5FCAQ"
   }
 }
