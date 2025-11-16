@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+    <fullName>Date_Format__c</fullName>
+    <label>Date Format</label>
+    <type>Picklist</type>
+    <valueSet>
+        <restricted>false</restricted>
+        <valueSetDefinition>
+            <sorted>false</sorted>
+                <value>
+                    <fullName>MM/DD/YYYY</fullName>
+                    <default>true</default>
+                    <label>01/20/2025</label>
+                </value>
+                <value>
+                    <fullName>YYYY-MM-DD</fullName>
+                    <default>false</default>
+                    <label>2025-01-20</label>
+                </value>
+                <value>
+                    <fullName>MMMM D, YYYY</fullName>
+                    <default>false</default>
+                    <label>January 20, 2025</label>
+                </value>
+                <value>
+                    <fullName>D MMM YYYY</fullName>
+                    <default>false</default>
+                    <label>20 Jan 2025</label>
+                </value>
+                 <value>
+                    <fullName>MMMM Do YYYY</fullName>
+                    <default>false</default>
+                    <label>January 20th 2025</label>
+                </value>                               
+                <value>
+                    <fullName>ddd, MMM D, YYYY</fullName>
+                    <default>false</default>
+                    <label>Mon, Jan 20, 2025</label>
+                </value>
+                <value>
+                    <fullName>dddd, MMMM D, YYYY</fullName>
+                    <default>false</default>
+                    <label>Monday, January 20, 2025</label>
+                </value>
+                <value>
+                    <fullName>YYYY-MM-DD HH:mm:ss</fullName>
+                    <default>false</default>
+                    <label>2025-01-20 14:30:00</label>
+                </value>
+        </valueSetDefinition>
+    </valueSet>
+</CustomField>
