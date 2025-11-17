@@ -1,29 +1,88 @@
 @RestResource(urlMapping='/signatureapi/webhook')
 global with sharing class SignatureApiWebhookHandler {
 
+    // ===================================================
+    // Logging Constants
+    // ===================================================
+    private static final String LOG_CONTEXT_PREFIX = '[Caliber eSign] SignatureAPI Webhook';
+    private static final String LOG_SOURCE         = 'APEX';
+    private static final String LOG_COMPONENT      = 'SignatureApiWebhookHandler';
+    private static final String LOG_OPERATION      = 'handleWebhook';
+
+    // ---------------------------------------------------
+    // Small logging helper used only in this class
+    // ---------------------------------------------------
+    private static void logEvent(
+        String contextDetail,
+        String message,
+        String severity,
+        Exception ex,
+        String correlationId,
+        String payloadJson
+    ) {
+        String fullContext = LOG_CONTEXT_PREFIX;
+        if (!String.isBlank(contextDetail)) {
+            fullContext += ' - ' + contextDetail;
+        }
+
+        try {
+            ErrorLogService.log(
+                fullContext,       // Context__c (LTA)
+                message,           // Message__c
+                severity,          // Severity__c
+                correlationId,     // Correlation_Id__c
+                ex,
+                payloadJson,       // Payload__c
+                LOG_SOURCE,        // Source__c = APEX
+                LOG_COMPONENT,     // Component__c = class name
+                LOG_OPERATION,     // Operation__c = method
+                null,              // parentRecordId
+                null               // parentRecordType
+            );
+        } catch (Exception ignore) {
+            // Logging must NEVER break a webhook endpoint
+        }
+    }
+
+
+    // ===================================================
+    // Webhook handler
+    // ===================================================
     @HttpPost
     global static void handleWebhook() {
         RestRequest  req = RestContext.request;
         RestResponse res = RestContext.response;
 
-        // Default response
+        // Always ACK 200 so SignatureAPI will not retry forever
         res.statusCode   = 200;
         res.responseBody = Blob.valueOf('OK');
 
         String body = null;
+        String correlationId = null;
 
         try {
-            body = req.requestBody != null
+            // -------------------------
+            // Read raw body
+            // -------------------------
+            body = (req.requestBody != null)
                 ? req.requestBody.toString()
                 : '';
 
             if (String.isBlank(body)) {
-                // Nothing we can do, but still return 200 so SignatureApi doesn't retry forever
-                System.debug('SignatureApiWebhookHandler: empty body received');
+                logEvent(
+                    'Empty webhook payload',
+                    'Webhook received an empty request body.',
+                    'WARN',
+                    null,
+                    null,
+                    null
+                );
                 return;
             }
 
+            // -------------------------
             // Parse JSON
+            // -------------------------
             Map<String, Object> payload =
                 (Map<String, Object>)JSON.deserializeUntyped(body);
 
@@ -36,24 +95,41 @@ global with sharing class SignatureApiWebhookHandler {
             String recipientKey = data != null ? (String)data.get('recipient_key') : null;
             String status       = data != null ? (String)data.get('status')        : null;
 
-            // Create Envelope_Event__c record for auditing
+            // Correlation id for logging (SignatureAPI envelope id)
+            correlationId = envelopeId;
+
+            // -------------------------
+            // Create event record
+            // -------------------------
             Envelope_Event__c evt = new Envelope_Event__c();
             evt.Event_Type__c     = eventType;
             evt.Envelope_Id__c    = envelopeId;
-            evt.Object_Id__c      = objectId;        // adjust field name if needed
+            evt.Object_Id__c      = objectId;
             evt.Recipient_Key__c  = recipientKey;
             evt.Status__c         = status;
             evt.Raw_Payload__c    = body;
-            evt.Processing_Status__c = 'Received';   // optional, if you have this field
+            evt.Processing_Status__c = 'Received';
 
             insert evt;
 
-            // Hand off to async processor so this endpoint stays fast & reliable
+            // -------------------------
+            // Process asynchronously
+            // -------------------------
             System.enqueueJob(new SignatureApiWebhookProcessor(evt.Id));
 
         } catch (Exception e) {
-            System.debug('Error in SignatureApiWebhookHandler: ' + e.getMessage());
 
+            // Log via ErrorLogService
+            logEvent(
+                'Webhook processing error',
+                e.getMessage(),
+                'ERROR',
+                e,
+                correlationId,
+                body
+            );
+
+            // Also fall back to creating an Envelope_Event__c (safeguard)
             try {
                 Envelope_Event__c errorEvt = new Envelope_Event__c();
                 errorEvt.Event_Type__c        = 'webhook.error';
@@ -61,10 +137,9 @@ global with sharing class SignatureApiWebhookHandler {
                 errorEvt.Error_Message__c     = e.getMessage();
                 errorEvt.Processing_Status__c = 'Failed';
                 insert errorEvt;
-            } catch (Exception logEx) {
-                System.debug('Failed to log webhook error event: ' + logEx.getMessage());
+            } catch (Exception ignore2) {
+                // Last-resort debug. Should basically never occur.
             }
         }
-
     }
 }

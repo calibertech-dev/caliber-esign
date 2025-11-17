@@ -1,6 +1,49 @@
 public with sharing class SignatureApiEnvelopeBuilderService {
 
     // =========================
+    // Logging
+    // =========================
+
+    private static final String LOG_CONTEXT_PREFIX = '[Caliber eSign] SignatureAPI Envelope Builder';
+    private static final String LOG_SOURCE_APEX    = 'APEX';
+    private static final String LOG_COMPONENT      = 'SignatureApiEnvelopeBuilderService';
+
+    private static void logEvent(
+        String contextDetail,
+        String message,
+        String severity,
+        Exception ex,
+        String operation,
+        String correlationId,
+        Id parentRecordId,
+        String parentRecordType,
+        String payloadJson
+    ) {
+        String fullContext = LOG_CONTEXT_PREFIX;
+        if (!String.isBlank(contextDetail)) {
+            fullContext += ' - ' + contextDetail;
+        }
+
+        try {
+            ErrorLogService.log(
+                fullContext,      // Context__c
+                message,          // Message__c
+                severity,         // Severity__c
+                correlationId,    // Correlation_Id__c
+                ex,
+                payloadJson,      // Payload__c
+                LOG_SOURCE_APEX,  // Source__c
+                LOG_COMPONENT,    // Component__c
+                operation,        // Operation__c
+                parentRecordId,
+                parentRecordType
+            );
+        } catch (Exception ignore) {
+            // Never let logging break envelope building
+        }
+    }
+
+    // =========================
     // Context / Result
     // =========================
 
@@ -37,9 +80,20 @@ public with sharing class SignatureApiEnvelopeBuilderService {
         BuildResult result = new BuildResult();
         result.envelopeId = ctx.envelopeId;
 
+        // For logging
+        Envelope__c env;
+        String correlationId;
+        Id parentRecordId;
+        String parentRecordType;
+        Map<String, Object> payloadForLog = new Map<String, Object>{
+            'envelopeId'       => ctx.envelopeId,
+            'sendImmediately'  => ctx.sendImmediately,
+            'contentVersionId' => ctx.contentVersionId
+        };
+
         try {
             // Lock Envelope__c
-            Envelope__c env = [
+            env = [
                 SELECT Id,
                        Name,
                        Parent_Record_Type__c,
@@ -50,6 +104,23 @@ public with sharing class SignatureApiEnvelopeBuilderService {
                 WHERE Id = :ctx.envelopeId
                 FOR UPDATE
             ];
+
+            // Establish correlation + parent info as soon as we have env
+            correlationId = String.isBlank(env.Envelope_Id__c)
+                ? String.valueOf(env.Id)
+                : env.Envelope_Id__c;
+
+            if (env.Parent_Record_Id__c != null) {
+                parentRecordId   = (Id)env.Parent_Record_Id__c;
+                parentRecordType = env.Parent_Record_Type__c;
+            } else {
+                parentRecordId   = env.Id;
+                parentRecordType = 'Envelope__c';
+            }
+
+            payloadForLog.put('envelopeName', env.Name);
+            payloadForLog.put('parentRecordId', env.Parent_Record_Id__c);
+            payloadForLog.put('parentRecordType', env.Parent_Record_Type__c);
 
             // Load parent (Contract__c, Proposal__c, etc.)
             SObject parent = SignatureApiEnvelopeOrchestrationService.loadParent(
@@ -62,6 +133,8 @@ public with sharing class SignatureApiEnvelopeBuilderService {
                 throw new CalloutException('No Document Template found on parent record.');
             }
 
+            payloadForLog.put('documentTemplateId', documentTemplateId);
+
             Document_Template__c docTmpl = [
                 SELECT Id, Name, Envelope_Template__c
                 FROM Document_Template__c
@@ -71,6 +144,9 @@ public with sharing class SignatureApiEnvelopeBuilderService {
             if (docTmpl.Envelope_Template__c == null) {
                 throw new CalloutException('No Envelope Template linked to this Document Template.');
             }
+
+            payloadForLog.put('documentTemplateName', docTmpl.Name);
+            payloadForLog.put('envelopeTemplateId', docTmpl.Envelope_Template__c);
 
             Envelope_Template__c envTmpl = [
                 SELECT Id,
@@ -82,6 +158,10 @@ public with sharing class SignatureApiEnvelopeBuilderService {
                 FROM Envelope_Template__c
                 WHERE Id = :docTmpl.Envelope_Template__c
             ];
+
+            payloadForLog.put('envelopeTemplateName', envTmpl.Name);
+            payloadForLog.put('routingMode', envTmpl.Routing_Mode__c);
+            payloadForLog.put('ceremonyCreation', envTmpl.Ceremony_Creation__c);
 
             // Build payload
             Map<String, Object> payload = new Map<String, Object>();
@@ -111,6 +191,13 @@ public with sharing class SignatureApiEnvelopeBuilderService {
             );
             payload.put('documents', documentsJson);
 
+            // For logging (we don't want to serialize gigantic payloads, but high-level is fine)
+            payloadForLog.put('routing', routing);
+            payloadForLog.put('ceremonyMode', ceremonyMode);
+            payloadForLog.put('hasRecipients', !recipientsJson.isEmpty());
+            payloadForLog.put('hasDocuments', !documentsJson.isEmpty());
+            payloadForLog.put('callout', 'SignatureApiClient.createEnvelope');
+
             // Call SignatureApi
             SignatureApiClient.EnvelopeCreateResponse apiRes =
                 SignatureApiClient.createEnvelope(payload);
@@ -125,11 +212,26 @@ public with sharing class SignatureApiEnvelopeBuilderService {
 
             result.signatureApiEnvelopeId = apiRes.id;
             result.status                 = apiRes.status;
+
             return result;
 
         } catch (Exception ex) {
-            // You can wire this into ErrorLogService later
             result.errorMessage = ex.getMessage();
+
+            String contextDetail = 'Envelope__c ' + String.valueOf(ctx.envelopeId);
+
+            logEvent(
+                contextDetail,
+                'Failed to build and send SignatureAPI envelope: ' + ex.getMessage(),
+                'ERROR',
+                ex,
+                'buildAndSendEnvelope',
+                correlationId,
+                parentRecordId,
+                parentRecordType,
+                JSON.serialize(payloadForLog)
+            );
+
             return result;
         }
     }

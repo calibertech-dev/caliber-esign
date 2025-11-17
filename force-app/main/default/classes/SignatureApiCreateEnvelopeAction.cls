@@ -101,6 +101,50 @@ public with sharing class SignatureApiCreateEnvelopeAction {
         public String errorMessage;
     }
 
+    // ====== Logging config & helper ======
+
+    // Context is a Long Text Area; we encode package + subsystem here.
+    private static final String LOG_CONTEXT_PREFIX = '[Caliber eSign] SignatureAPI Envelope';
+    // This is an Invocable used from Flow.
+    private static final String LOG_SOURCE_FLOW    = 'FLOW';
+    // Component is the technical unit: this class.
+    private static final String LOG_COMPONENT      = 'SignatureApiCreateEnvelopeAction';
+
+    private static void logEvent(
+        String contextDetail,
+        String message,
+        String severity,
+        Exception ex,
+        String operation,
+        String correlationId,
+        Id parentRecordId,
+        String parentRecordType,
+        String payloadJson
+    ) {
+        String fullContext = LOG_CONTEXT_PREFIX;
+        if (!String.isBlank(contextDetail)) {
+            fullContext += ' - ' + contextDetail;
+        }
+
+        try {
+            ErrorLogService.log(
+                fullContext,       // Context__c
+                message,           // Message__c
+                severity,          // Severity__c
+                correlationId,     // Correlation_Id__c
+                ex,
+                payloadJson,       // Payload__c
+                LOG_SOURCE_FLOW,   // Source__c (FLOW)
+                LOG_COMPONENT,     // Component__c
+                operation,         // Operation__c
+                parentRecordId,
+                parentRecordType
+            );
+        } catch (Exception ignore) {
+            // Logging must never break Flow execution
+        }
+    }
+
     // ====== Invocable entry point for Flow ======
     @InvocableMethod(
         label='SignatureApi - Create Envelope'
@@ -110,57 +154,120 @@ public with sharing class SignatureApiCreateEnvelopeAction {
         List<Response> out = new List<Response>();
 
         for (Request req : requests) {
+            Response r = new Response();
+
+            // Per-request context for logging
+            Id parentRecordId        = req.parentRecordId;
+            String parentRecordType  = req.parentRecordType;
+            String correlationId     = parentRecordId != null ? String.valueOf(parentRecordId) : null;
+            String contextDetail     = 'Create envelope for parent ' + String.valueOf(parentRecordId);
+
             SignatureApiEnvelopeOrchestrationService.SendRequest sReq =
                 new SignatureApiEnvelopeOrchestrationService.SendRequest();
+            SignatureApiEnvelopeOrchestrationService.SendResult sRes;
 
-            sReq.parentRecordId    = req.parentRecordId;
-            sReq.parentSObjectType = req.parentRecordType;
-            sReq.sendImmediately   = req.sendImmediately;
+            try {
+                sReq.parentRecordId    = req.parentRecordId;
+                sReq.parentSObjectType = req.parentRecordType;
+                sReq.sendImmediately   = req.sendImmediately;
 
-            // Map recipients to orchestration DTO
-            if (req.recipients != null) {
-                sReq.recipients = new List<SignatureApiEnvelopeOrchestrationService.RecipientInput>();
-                for (RecipientInput inRec : req.recipients) {
-                    if (inRec == null) continue;
+                // Map recipients to orchestration DTO
+                if (req.recipients != null) {
+                    sReq.recipients = new List<SignatureApiEnvelopeOrchestrationService.RecipientInput>();
+                    for (RecipientInput inRec : req.recipients) {
+                        if (inRec == null) continue;
 
-                    SignatureApiEnvelopeOrchestrationService.RecipientInput outRec =
-                        new SignatureApiEnvelopeOrchestrationService.RecipientInput();
-                    outRec.recipientKey   = inRec.recipientKey;
-                    outRec.name           = inRec.name;
-                    outRec.email          = inRec.email;
-                    outRec.signerRecordId = inRec.signerRecordId; // optional
-                    sReq.recipients.add(outRec);
+                        SignatureApiEnvelopeOrchestrationService.RecipientInput outRec =
+                            new SignatureApiEnvelopeOrchestrationService.RecipientInput();
+                        outRec.recipientKey   = inRec.recipientKey;
+                        outRec.name           = inRec.name;
+                        outRec.email          = inRec.email;
+                        outRec.signerRecordId = inRec.signerRecordId; // optional
+                        sReq.recipients.add(outRec);
+                    }
                 }
-            }
 
-            // Map documents to orchestration DTO
-            if (req.documents != null) {
-                sReq.documents = new List<SignatureApiEnvelopeOrchestrationService.DocumentInput>();
-                for (DocumentInput inDoc : req.documents) {
-                    if (inDoc == null) continue;
+                // Map documents to orchestration DTO
+                if (req.documents != null) {
+                    sReq.documents = new List<SignatureApiEnvelopeOrchestrationService.DocumentInput>();
+                    for (DocumentInput inDoc : req.documents) {
+                        if (inDoc == null) continue;
 
+                        SignatureApiEnvelopeOrchestrationService.DocumentInput outDoc =
+                            new SignatureApiEnvelopeOrchestrationService.DocumentInput();
+                        outDoc.contentVersionId = inDoc.contentVersionId;
+                        sReq.documents.add(outDoc);
+                    }
+                } else if (req.contentVersionId != null) {
+                    // Backwards-compat: single contentVersionId
+                    sReq.documents = new List<SignatureApiEnvelopeOrchestrationService.DocumentInput>();
                     SignatureApiEnvelopeOrchestrationService.DocumentInput outDoc =
                         new SignatureApiEnvelopeOrchestrationService.DocumentInput();
-                    outDoc.contentVersionId = inDoc.contentVersionId;
+                    outDoc.contentVersionId = req.contentVersionId;
                     sReq.documents.add(outDoc);
                 }
-            } else if (req.contentVersionId != null) {
-                // Backwards-compat: single contentVersionId
-                sReq.documents = new List<SignatureApiEnvelopeOrchestrationService.DocumentInput>();
-                SignatureApiEnvelopeOrchestrationService.DocumentInput outDoc =
-                    new SignatureApiEnvelopeOrchestrationService.DocumentInput();
-                outDoc.contentVersionId = req.contentVersionId;
-                sReq.documents.add(outDoc);
+
+                // Core orchestration call
+                sRes = SignatureApiEnvelopeOrchestrationService.createAndSendEnvelope(sReq);
+
+                // Update correlationId once we know the SignatureApi envelope id
+                if (!String.isBlank(sRes.signatureApiEnvelopeId)) {
+                    correlationId = sRes.signatureApiEnvelopeId;
+                }
+
+                // Map result to Flow response
+                r.envelopeId             = sRes.envelopeId;
+                r.signatureApiEnvelopeId = sRes.signatureApiEnvelopeId;
+                r.status                 = sRes.status;
+                r.errorMessage           = sRes.errorMessage;
+
+                // If the orchestration reported an error, log it (even though we didn't throw)
+                if (!String.isBlank(sRes.errorMessage)) {
+                    String payloadJson = JSON.serialize(new Map<String, Object>{
+                        'sendRequest'  => sReq,
+                        'sendResult'   => new Map<String, Object>{
+                            'envelopeId'             => sRes.envelopeId,
+                            'signatureApiEnvelopeId' => sRes.signatureApiEnvelopeId,
+                            'status'                 => sRes.status,
+                            'errorMessage'           => sRes.errorMessage
+                        }
+                    });
+
+                    logEvent(
+                        contextDetail,
+                        sRes.errorMessage,
+                        'ERROR', // this is an actual failure path
+                        null,
+                        'createEnvelopes',
+                        correlationId,
+                        parentRecordId,
+                        parentRecordType,
+                        payloadJson
+                    );
+                }
+
+            } catch (Exception ex) {
+                // Populate Flow response with the exception message
+                r.errorMessage = ex.getMessage();
+
+                String payloadJson = JSON.serialize(new Map<String, Object>{
+                    'sendRequest'   => sReq,
+                    'parentRecordId'=> parentRecordId,
+                    'parentRecordType' => parentRecordType
+                });
+
+                logEvent(
+                    contextDetail,
+                    'Unhandled exception during envelope creation: ' + ex.getMessage(),
+                    'ERROR',
+                    ex,
+                    'createEnvelopes',
+                    correlationId,
+                    parentRecordId,
+                    parentRecordType,
+                    payloadJson
+                );
             }
-
-            SignatureApiEnvelopeOrchestrationService.SendResult sRes =
-                SignatureApiEnvelopeOrchestrationService.createAndSendEnvelope(sReq);
-
-            Response r = new Response();
-            r.envelopeId             = sRes.envelopeId;
-            r.signatureApiEnvelopeId = sRes.signatureApiEnvelopeId;
-            r.status                 = sRes.status;
-            r.errorMessage           = sRes.errorMessage;
 
             out.add(r);
         }

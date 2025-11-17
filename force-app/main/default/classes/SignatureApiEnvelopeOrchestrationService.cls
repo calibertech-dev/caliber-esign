@@ -26,17 +26,68 @@ public with sharing class SignatureApiEnvelopeOrchestrationService {
         @AuraEnabled public String errorMessage;
     }
 
+    // ------------------------------------------------------------------
+    // Logging: [Caliber eSign] / APEX / this class
+    // ------------------------------------------------------------------
+    private static final String LOG_CONTEXT_PREFIX = '[Caliber eSign] Envelope Orchestration';
+    private static final String LOG_SOURCE         = 'APEX';
+    private static final String LOG_COMPONENT      = 'SignatureApiEnvelopeOrchestrationService';
+
+    private static void logEvent(
+        String contextDetail,
+        String message,
+        String severity,
+        Exception ex,
+        String operation,
+        String correlationId,
+        Id parentRecordId,
+        String parentRecordType,
+        String payloadJson
+    ) {
+        String fullContext = LOG_CONTEXT_PREFIX;
+        if (!String.isBlank(contextDetail)) {
+            fullContext += ' - ' + contextDetail;
+        }
+
+        try {
+            ErrorLogService.log(
+                fullContext,      // Context__c
+                message,          // Message__c
+                severity,         // Severity__c
+                correlationId,    // Correlation_Id__c
+                ex,
+                payloadJson,      // Payload__c
+                LOG_SOURCE,       // Source__c (APEX)
+                LOG_COMPONENT,    // Component__c
+                operation,        // Operation__c
+                parentRecordId,
+                parentRecordType
+            );
+        } catch (Exception ignore) {
+            // Never let logging break the main path
+        }
+    }
+
     @AuraEnabled
     public static SendResult createAndSendEnvelope(SendRequest req) {
         SendResult result = new SendResult();
 
+        // Correlation + parent context we’ll fill as we go
+        Id envelopeId;
+        Id parentRecordId   = req != null ? req.parentRecordId : null;
+        String parentTypeName;
+        String correlationId;
+
         try {
+            if (req == null) {
+                throw new AuraHandledException('Request payload is required.');
+            }
+
             if (req.parentRecordId == null) {
                 throw new AuraHandledException('Parent record Id is required.');
             }
 
             // ==== 1) Resolve parent type safely ====
-            String parentTypeName;
             if (!String.isBlank(req.parentSObjectType)) {
                 parentTypeName = req.parentSObjectType;
             } else {
@@ -54,6 +105,8 @@ public with sharing class SignatureApiEnvelopeOrchestrationService {
                     'Unsupported parent type for SignatureApi envelopes: ' + parentTypeName
                 );
             }
+
+            correlationId = String.valueOf(req.parentRecordId);
 
             // ==== 2) Load parent & document template ====
             SObject parent = loadParent(req.parentRecordId, parentTypeName);
@@ -87,13 +140,15 @@ public with sharing class SignatureApiEnvelopeOrchestrationService {
             env.Status__c             = getInitialEnvelopeStatus();
             insert env;
 
+            envelopeId   = env.Id;
+            correlationId = String.valueOf(envelopeId); // Prefer the envelope as correlation
+            result.envelopeId = envelopeId;
+
             // Populate Parent_Record_Name__c so your formula link works
             List<SObject> envWrapper = new List<SObject>();
             envWrapper.add(env);
             PolymorphicRecordNameUtil.updateRecordNames(envWrapper);
             update env;
-
-            result.envelopeId = env.Id;
 
             // ==== 4) Create Envelope_Recipient__c records ====
             if (req.recipients != null) {
@@ -154,6 +209,30 @@ public with sharing class SignatureApiEnvelopeOrchestrationService {
             result.status                 = buildRes.status;
             result.errorMessage           = buildRes.errorMessage;
 
+            // Log if builder reported an error even though we didn’t throw
+            if (!String.isBlank(buildRes.errorMessage)) {
+                logEvent(
+                    'createAndSendEnvelope for parent ' + String.valueOf(req.parentRecordId),
+                    'Envelope builder reported error: ' + buildRes.errorMessage,
+                    'ERROR',
+                    null,
+                    'createAndSendEnvelope',
+                    correlationId,
+                    req.parentRecordId,
+                    parentTypeName,
+                    JSON.serialize(new Map<String, Object>{
+                        'envelopeId'              => envelopeId,
+                        'parentRecordId'          => req.parentRecordId,
+                        'parentSObjectType'       => parentTypeName,
+                        'sendImmediately'         => sendNow,
+                        'contentVersionId'        => contentVersionId,
+                        'builderStatus'           => buildRes.status,
+                        'builderEnvelopeId'       => buildRes.signatureApiEnvelopeId,
+                        'builderErrorMessage'     => buildRes.errorMessage
+                    })
+                );
+            }
+
             // ==== 7) Post-create notifications ====
             if (String.isBlank(buildRes.errorMessage)) {
                 SignatureApiNotificationService.handlePostCreateNotifications(env.Id);
@@ -163,6 +242,28 @@ public with sharing class SignatureApiEnvelopeOrchestrationService {
 
         } catch (Exception ex) {
             result.errorMessage = ex.getMessage();
+
+            // AuraHandledException => WARN (expected/user-visible validation),
+            // everything else => ERROR
+            String severity = (ex instanceof AuraHandledException) ? 'WARN' : 'ERROR';
+
+            logEvent(
+                'createAndSendEnvelope for parent ' + String.valueOf(parentRecordId),
+                ex.getMessage(),
+                severity,
+                ex,
+                'createAndSendEnvelope',
+                correlationId,
+                parentRecordId,
+                parentTypeName,
+                JSON.serialize(new Map<String, Object>{
+                    'parentRecordId'    => parentRecordId,
+                    'parentSObjectType' => parentTypeName,
+                    'envelopeId'        => envelopeId,
+                    'request'           => req
+                })
+            );
+
             return result;
         }
     }

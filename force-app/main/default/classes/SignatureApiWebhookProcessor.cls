@@ -1,9 +1,58 @@
 public with sharing class SignatureApiWebhookProcessor implements Queueable, Database.AllowsCallouts {
 
+    // ==========================================================
+    // Logging configuration
+    // ==========================================================
+    private static final String LOG_CONTEXT_PREFIX = '[Caliber eSign] SignatureAPI Webhook';
+    private static final String LOG_SOURCE         = 'APEX';
+    private static final String LOG_COMPONENT      = 'SignatureApiWebhookProcessor';
+
     private Id envelopeEventId;
 
     public SignatureApiWebhookProcessor(Id envelopeEventId) {
         this.envelopeEventId = envelopeEventId;
+    }
+
+    /**
+     * Central logging helper. Fields mapping:
+     * - Context__c   = "[Caliber eSign] SignatureAPI Webhook - <contextDetail>"
+     * - Source__c    = "APEX"
+     * - Component__c = "SignatureApiWebhookProcessor"
+     * - Operation__c = operation
+     */
+    private static void logEvent(
+        String contextDetail,
+        String message,
+        String severity,
+        Exception ex,
+        String operation,
+        String correlationId,
+        Id parentRecordId,
+        String parentRecordType,
+        String payloadJson
+    ) {
+        String fullContext = LOG_CONTEXT_PREFIX;
+        if (!String.isBlank(contextDetail)) {
+            fullContext += ' - ' + contextDetail;
+        }
+
+        try {
+            ErrorLogService.log(
+                fullContext,      // Context__c
+                message,          // Message__c
+                severity,         // Severity__c
+                correlationId,    // Correlation_Id__c
+                ex,
+                payloadJson,      // Payload__c
+                LOG_SOURCE,       // Source__c
+                LOG_COMPONENT,    // Component__c
+                operation,        // Operation__c
+                parentRecordId,
+                parentRecordType
+            );
+        } catch (Exception ignore) {
+            // Logging must never break the main flow
+        }
     }
 
     public void execute(QueueableContext qc) {
@@ -24,6 +73,10 @@ public with sharing class SignatureApiWebhookProcessor implements Queueable, Dat
             FROM Envelope_Event__c
             WHERE Id = :envelopeEventId
         ];
+
+        String correlationId = evt.Envelope_Id__c;
+        Id parentRecordId;
+        String parentRecordType;
 
         try {
             evt.Processing_Status__c = 'Processing';
@@ -81,6 +134,7 @@ public with sharing class SignatureApiWebhookProcessor implements Queueable, Dat
             }
 
             evt.Processing_Status__c = 'Completed';
+            evt.Error_Message__c     = null;
             update evt;
 
         } catch (Exception ex) {
@@ -88,19 +142,44 @@ public with sharing class SignatureApiWebhookProcessor implements Queueable, Dat
             evt.Error_Message__c     = ex.getMessage();
             update evt;
 
-            // Optional: central logging
-            ErrorLogService.log(
-                'SignatureApi',
-                'Webhook processing failed',
+            // Best-effort link to the parent record (Envelope or parent of Envelope)
+            try {
+                // Try to locate the envelope to hang the log off a business record if possible
+                List<Envelope__c> envs = [
+                    SELECT Id, Envelope_Id__c, Parent_Record_Id__c, Parent_Record_Type__c
+                    FROM Envelope__c
+                    WHERE Envelope_Id__c = :evt.Envelope_Id__c
+                    LIMIT 1
+                ];
+                if (!envs.isEmpty()) {
+                    Envelope__c env = envs[0];
+                    if (env.Parent_Record_Id__c != null) {
+                        parentRecordId   = (Id)env.Parent_Record_Id__c;
+                        parentRecordType = env.Parent_Record_Type__c;
+                    } else {
+                        parentRecordId   = env.Id;
+                        parentRecordType = 'Envelope__c';
+                    }
+                }
+            } catch (Exception ignoreEnv) {
+                // If this fails, we'll fall back to logging against the event itself
+            }
+
+            if (parentRecordId == null) {
+                parentRecordId   = evt.Id;
+                parentRecordType = 'Envelope_Event__c';
+            }
+
+            logEvent(
+                'Webhook ' + evt.Id + ' eventType=' + evt.Event_Type__c,
+                'Webhook processing failed for Envelope_Event__c ' + evt.Id,
                 'ERROR',
-                null,
                 ex,
-                evt.Raw_Payload__c,
-                'Caliber Core',
-                'SignatureApiWebhookProcessor',
                 'execute',
-                evt.Id,
-                'Envelope_Event__c'
+                correlationId,
+                parentRecordId,
+                parentRecordType,
+                evt.Raw_Payload__c
             );
         }
     }
@@ -247,7 +326,7 @@ public with sharing class SignatureApiWebhookProcessor implements Queueable, Dat
     private static void handleDeliverableGenerated(Envelope_Event__c evt) {
         // Find the envelope first
         List<Envelope__c> envs = [
-            SELECT Id, Name, Envelope_Id__c, Parent_Record_Id__c
+            SELECT Id, Name, Envelope_Id__c, Parent_Record_Id__c, Parent_Record_Type__c
             FROM Envelope__c
             WHERE Envelope_Id__c = :evt.Envelope_Id__c
             LIMIT 1
@@ -255,6 +334,16 @@ public with sharing class SignatureApiWebhookProcessor implements Queueable, Dat
         if (envs.isEmpty()) return;
 
         Envelope__c env = envs[0];
+
+        Id parentRecordId;
+        String parentRecordType;
+        if (env.Parent_Record_Id__c != null) {
+            parentRecordId   = (Id)env.Parent_Record_Id__c;
+            parentRecordType = env.Parent_Record_Type__c;
+        } else {
+            parentRecordId   = env.Id;
+            parentRecordType = 'Envelope__c';
+        }
 
         try {
             SignatureApiDownloadService.DownloadResult dl =
@@ -264,15 +353,84 @@ public with sharing class SignatureApiWebhookProcessor implements Queueable, Dat
                 );
 
             if (dl.error != null) {
-                System.debug('Download error for envelope ' + env.Id + ': ' + dl.error);
+                // Our download failed (Salesforce side) – log it
+                logEvent(
+                    'deliverable.generated download error for Envelope__c ' + env.Id,
+                    'Download error for envelope ' + env.Id + ': ' + dl.error,
+                    'ERROR',
+                    null,
+                    'handleDeliverableGenerated',
+                    env.Envelope_Id__c,
+                    parentRecordId,
+                    parentRecordType,
+                    JSON.serialize(new Map<String, Object>{
+                        'envelopeEventId'  => evt.Id,
+                        'envelopeId'       => env.Id,
+                        'signatureApiEnvelopeId' => env.Envelope_Id__c,
+                        'downloadError'    => dl.error
+                    })
+                );
             }
         } catch (Exception e) {
-            System.debug('Exception during deliverable.generated download: ' + e.getMessage());
+            // Exception on our side while handling a successful deliverable.generated
+            logEvent(
+                'Exception during deliverable.generated download for Envelope__c ' + env.Id,
+                'Exception during deliverable.generated download: ' + e.getMessage(),
+                'ERROR',
+                e,
+                'handleDeliverableGenerated',
+                env.Envelope_Id__c,
+                parentRecordId,
+                parentRecordType,
+                JSON.serialize(new Map<String, Object>{
+                    'envelopeEventId'  => evt.Id,
+                    'envelopeId'       => env.Id,
+                    'signatureApiEnvelopeId' => env.Envelope_Id__c
+                })
+            );
         }
     }
 
     private static void handleDeliverableFailed(Envelope_Event__c evt) {
-        // Optional: log or flag something when deliverable generation fails
+        // This indicates SignatureApi had a problem generating the completed document.
+        // That is an upstream failure, not a Salesforce processing failure.
+        List<Envelope__c> envs = [
+            SELECT Id, Name, Envelope_Id__c, Parent_Record_Id__c, Parent_Record_Type__c
+            FROM Envelope__c
+            WHERE Envelope_Id__c = :evt.Envelope_Id__c
+            LIMIT 1
+        ];
+
+        Id parentRecordId;
+        String parentRecordType;
+        String correlationId = evt.Envelope_Id__c;
+
+        if (!envs.isEmpty()) {
+            Envelope__c env = envs[0];
+            if (env.Parent_Record_Id__c != null) {
+                parentRecordId   = (Id)env.Parent_Record_Id__c;
+                parentRecordType = env.Parent_Record_Type__c;
+            } else {
+                parentRecordId   = env.Id;
+                parentRecordType = 'Envelope__c';
+            }
+        } else {
+            // Fall back to the event if we cannot locate the envelope
+            parentRecordId   = evt.Id;
+            parentRecordType = 'Envelope_Event__c';
+        }
+
+        logEvent(
+            'deliverable.failed for Envelope_Id__c ' + String.valueOf(evt.Envelope_Id__c),
+            'SignatureApi reported deliverable.failed for envelope ' + String.valueOf(evt.Envelope_Id__c),
+            'ERROR',
+            null,
+            'handleDeliverableFailed',
+            correlationId,
+            parentRecordId,
+            parentRecordType,
+            evt.Raw_Payload__c
+        );
     }
 
     // ===========================
@@ -280,19 +438,19 @@ public with sharing class SignatureApiWebhookProcessor implements Queueable, Dat
     // ===========================
 
     private static void handleSenderCreated(Envelope_Event__c evt) {
-        // optional behavior
+        // future behaviour
     }
 
     private static void handleSenderDeleted(Envelope_Event__c evt) {
-        // optional behavior
+        // future behavior
     }
 
     private static void handleSenderFailed(Envelope_Event__c evt) {
-        // optional behavior
+        // future behavior
     }
 
     private static void handleSenderVerified(Envelope_Event__c evt) {
-        // optional behavior
+        // future behavior
     }
 
     // ===========================

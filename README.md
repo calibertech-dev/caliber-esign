@@ -1,6 +1,6 @@
-# Caliber SignatureAPI Integration
+# Caliber eSign 
 
-The **Caliber SignatureAPI Integration** package provides a complete, extensible, production-grade digital signature engine for the **Caliber Platform**.  
+The **Caliber eSign** package provides a complete, extensible, production-grade digital signature engine for the **Caliber Platform**.  
 It orchestrates creation, routing, sending, signing, event processing, and document retrieval through a unified, metadata-driven model that supports **Flow**, **Apex**, and **LWC** clients.
 
 This package is designed for commercial use: fully configurable, scalable, and ready for managed packaging and AppExchange distribution.
@@ -93,11 +93,11 @@ All classes integrate with **Caliber Core’s ErrorLogService**, giving:
 
 1. Install dependencies:
    1. `Caliber Core`
-   2. `Caliber SignatureAPI Integration`
+   2. `Caliber eSign`
 
 2. Assign permission sets:
-   - `SignatureAPI Admin`
-   - `SignatureAPI User`
+   - `Caliber eSign Admin`
+   - `Caliber eSign User`
 
 3. Configure Named Credential:
    - Maps to your SignatureAPI base endpoint  
@@ -105,7 +105,7 @@ All classes integrate with **Caliber Core’s ErrorLogService**, giving:
    - Test connectivity using Upcoming Setup LWC  
 
 4. Configure Webhook:
-   - Copy endpoint URL: `/services/apexrest/signatureAPIWebhook`
+   - Copy endpoint URL: `/services/apexrest/eSign`
    - Paste into your SignatureAPI “Developer → Webhooks” settings  
    - Point it to your Salesforce Named Credential URL
 
