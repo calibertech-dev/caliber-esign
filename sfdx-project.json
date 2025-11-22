@@ -6,7 +6,15 @@
       "path": "force-app",
       "default": true,
       "package": "caliber-esign",
-      "versionDescription": "caliber-esign package"
+      "versionDescription": "caliber-esign package",
+      "dependencies": [
+        {
+          "package": "caliber-core"
+        },
+        {
+          "package": "caliber-commerce"
+        }
+      ]
     }
   ],
   "name": "caliber-esign",
